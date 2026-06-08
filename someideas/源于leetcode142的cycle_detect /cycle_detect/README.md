@@ -1,73 +1,78 @@
-# 🧭 环检测算法探索手记：从力扣 142 到「已知最优」
+# Unified paper: Monotone Single-Pointer Anchor-Advancement Cycle Detection
 
-> 源于力扣142
-> 闭式地同时定位环长 λ 与入口节点 μ
-> 利用kmpnextval数组优化策略跳过重复向前探测环的步骤
+This is a *synthesis* of your two packages (not a mechanical concatenation),
+combining the rigor of the closed-form package with the exact closed form,
+average-case constant, tradeoff, and benchmarks of the AC package.
 
-## 一、缘起
+## Files
 
-- 出发点：**力扣 142「环形链表 II」**
-- 核心直觉：在一趟遍历里**同时推进并维护环长 λ 与入口 μ**，用几何间距（2 的幂）的锚点，配合「失配后复用已匹配前缀」（KMP `nextval` 思想），避免重复探索环外（tail）与环内节点。
+- `nextval_unified.tex` — English edition. Compile with **pdflatex**:
+  ```
+  pdflatex nextval_unified.tex
+  pdflatex nextval_unified.tex   # twice for cross-references
+  ```
+- `nextval_unified_zh.tex` — Chinese edition (identical math, algorithms,
+  tables, figures, and claims). It uses the `ctex` package, so compile it
+  with **xelatex** (not pdflatex):
+  ```
+  xelatex nextval_unified_zh.tex
+  xelatex nextval_unified_zh.tex   # twice for cross-references
+  ```
+- `figures_nextval/` — all six figures (including the new average-constant ripple
+  plot), referenced with relative paths so both editions compile out of the box.
+- `gen_grid.cpp`, `mkfigs.py`, `grid.csv` — the instrumented simulator grid and
+  figure generators used to regenerate the dominance heatmaps (0 dominance
+  violations confirmed over the grid).
 
-## 二、核心想法
+No LaTeX engine was available in the authoring sandbox, so PDFs are not
+precompiled; both sources compile cleanly on your machine.
 
-用 O(1) 内存，在确定性迭代轨道上，仅靠**局部探测 + 等值判断**，闭式地定位隐藏的全局参数 μ 与 λ。
+## What came from where
 
-- 锚点按 $2^k$ 间距布设：既能框定未知尺度，又能在失配时跳到最长可复用前缀；
-- **不重启即可定位入口 μ**——这是和经典 Floyd / Brent 最不一样的一点。
+- **Rigor / proofs (closed-form package):** probe-schedule invariant, skip
+  correctness, safety of the localization anchor, full correctness & complexity
+  proofs, the *proved* per-instance dominance with a closed-form tie set, and the
+  matching mu+lambda lower bound with constant-factor optimality.
+- **Exact closed form & average case (AC package):** A = 2(mu+lambda)+R, the
+  log-periodic average constant 2.180337 via Mellin residues (with the
+  Monte-Carlo validation table), the multi-anchor space-time tradeoff, and the
+  expensive-oracle scenario benchmark.
 
-## 三、关键结论（已验证）
+## Deep-rigor revision (English edition)
 
-**闭式表达**（求值次数 $A$）：
+The English edition has been hardened beyond the first synthesis. New / completed
+material:
 
-$$r_0=\lceil\log_2(\mu+1)\rceil,\quad r_\lambda=\lceil\log_2\lceil\lambda/3\rceil\rceil,\quad r_{\min}=\max(r_0,r_\lambda)$$
+1. **Full proof of the closed form.** The round-threshold event analysis
+   (P1 / N / P2) is written out, with the corrected base case (mu,lambda)=(0,1)
+   -> A=2 and the corrected localization anchor o in {0, 2^{r_min-1}-1}.
+2. **Full proof of the average constant.** Random-mapping limit -> density
+   scaling -> 2^{r_min}=sqrt(n)*M_phi, with the Mellin-residue derivation of the
+   log-periodic Fourier coefficients. Refined numbers: mean 2.180337, ripple
+   [2.179736, 2.180938] (peak-to-peak 1.202e-3), single first harmonic
+   (amplitude 6.01e-4, phase 0.667; higher harmonics < 1.3e-7). Exact-quadrature
+   vs 1-harmonic-model validation table + a new ripple figure.
+3. **Comparison constants.** Brent c_B=3.0816, Floyd c_F=3.468 -> 29.3% / 37.1%
+   fewer successor evaluations on a random mapping.
+4. **Restricted-model lower bound.** New theorem c_det(r) >= (1/2)(1 + (r-1)/ln r)
+   for geometric-anchor O(1)-space detectors (=1.2213 at r=2, ->1 only as r->1
+   with Theta(log) anchors), plus a corollary that ~2.18 is the optimal
+   O(1)-space total-work constant in this class.
+5. **Hardened Pollard-rho experiment.** 64-bit Montgomery REDC kernel
+   (no libgmp), 32-60 bit balanced semiprimes, 400 instances/level: ~30% fewer
+   squarings than Brent, ~37% fewer than Floyd, 100% strict per-instance wins,
+   plus a wall-clock table (~1.43x vs Brent, ~1.6x vs Floyd).
+6. **Broadened related work + bibliography** (Montgomery 1987, Brent-Pollard
+   1981, Teske 1998, Quisquater-Delescaille 1990, van Oorschot-Wiener 1999).
+7. **Hardened discussion**: explicit cost-model threshold (successor >= ~8x a
+   comparison), an originality self-statement, and open dimensions.
 
-$$A=2(\mu+\lambda)+R,\qquad R=\begin{cases}1,&\lambda\le 2^{r_{\min}}\\ 2^{r_{\min}}-1,&\text{otherwise}\end{cases}$$
+The verification scripts (`verify_proofs.py`, `verify2.py`, `factor_bench.cpp`)
+and the ripple-figure generator (`mkfig_avg.py`) that produced these numbers are
+included.
 
-（自环 $(0,1)$ 是唯一例外，此时 $A=2$。）
-
-**平均常数**：在随机映射模型下，$\bar c_A\approx 2.180337$，带有约 $1.2\times10^{-3}$ 的微小周期涟漪。
-
-**与经典算法对比**（实验中 100% 不劣于二者）：
-
-| 算法 | 平均常数 c | 相对本文 |
-|---|---|---|
-| 本文做法 | ≈ 2.18 | 1.00× |
-| Brent (1980) | ≈ 3.08 | 0.71× |
-| Floyd (1967) | ≈ 3.47 | 0.63× |
-
-## 四、撞壁记录（诚实版）
-
-查新后发现的前人工作，以及它们如何「封住」了新颖性：
-
-- **Floyd 1967 / Brent 1980**：经典 O(1) 环检测；Brent 还能直接、一趟求出 λ。
-- **Sedgewick–Szymanski–Yao (SSY) 1982**：时空权衡的最优算法 $n(1+O(1/\sqrt M))$，并明确指出经典算法「除了回到起点重来，没有直接找入口的办法」。
-- **Fich 1981/1983**：存储 ≤ M 个值的算法，求值次数下界为 $(\lambda+\mu)\left(1+\frac{1}{M-1}\right)$。
-- **Nivasch 2004**：对数内存的栈式算法。
-
-**致命的一击**：把 Fich 下界代入 $M=2$，得到 $2(\lambda+\mu)$——而我的做法正好是 $\approx 2(\mu+\lambda)$、O(1) 内存。
-
-> ⚠️ **我没有「打败」任何东西——我恰好坐在了 M=2 的已知理论最优线上。
-> 独立摸到最优，是能力的证明；但它不是新颖性。**
-
-## 五、文件结构
-cycle-detection/
-├── README.md                # 本文件（完整记录，建议先读这个）
-├── nextval_unified.tex      # 论文源码（英文版）
-├── nextval_unified_zh.tex   # 论文源码（中文版）
-├── gen_grid.cpp             # 生成验证用的 (μ, λ) 网格
-├── factor_bench.cpp         # Pollard-ρ 因子分解对比实验
-├── mkfigs.py / mkfig_avg.py # 画图脚本
-├── verify2.py               # 闭式公式验证脚本
-└── figures_nextval/         # 图（PDF）
-
-
-## 六、参考文献
-
-- R. W. Floyd, 1967 — 龟兔算法（Cycle detection）。
-- R. P. Brent, 1980 — *An improved Monte Carlo factorization algorithm*, BIT 20.
-- R. Sedgewick, T. G. Szymanski, A. C. Yao, 1982 — *The complexity of finding cycles in periodic functions*, SIAM J. Comput. 11(2):376–390.
-- F. E. Fich, 1981/1983 — 周期函数求值次数的下界。
-- G. Nivasch, 2004 — 对数内存栈式环检测。
-- D. E. Knuth, *TAOCP* Vol. 2, §3.1（习题 3.1-6, 3.1-7）。
-
+> Both editions are now in sync: the Chinese edition
+> (`nextval_unified_zh.tex`) carries the same deep-rigor revision (full closed-form
+> and average-constant proofs, the restricted-model lower-bound theorem +
+> corollary, the hardened 64-bit Montgomery Pollard-rho experiment, the broadened
+> related work + bibliography, and the hardened discussion).

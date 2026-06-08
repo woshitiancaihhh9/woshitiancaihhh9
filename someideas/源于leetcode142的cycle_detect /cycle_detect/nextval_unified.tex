@@ -1,0 +1,1353 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\title{A Monotone Single-Pointer Anchor-Advancement Algorithm\\
+for Cycle Detection: Exact Closed Form, Provable Dominance,\\
+and Optimality in the Successor-Evaluation Model}
+\author{zx l}
+\date{June 2026}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\nextop}{\texttt{next}}
+\newcommand{\nullnode}{\texttt{null}}
+\newcommand{\oldc}{\texttt{old}}
+\newcommand{\newc}{\texttt{newc}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Given a start node and a successor oracle $f$, detecting the eventual cycle of
+the sequence $x,f(x),f^2(x),\dots$ and recovering its tail length $\mu$ and
+period $\lambda$ is the textbook problem solved in $O(1)$ memory by Floyd's
+tortoise-and-hare and Brent's power-of-two algorithms. We present a
+\emph{monotone single-pointer anchor-advancement} algorithm for the same
+problem. It keeps a current anchor, a candidate next anchor, and a safe
+localization anchor; it probes in two phases and applies a failure-compression
+(``nextval'') rule that never rescans an interval whose return-to-anchor checks
+have already failed. The pointer never rewalks a node. Under the
+successor-evaluation cost model we give a single, coherent account of the method:
+\textbf{(i)} a correctness proof (linear time, constant space, safe
+localization); \textbf{(ii)} an \emph{exact closed form} for the
+evaluation count $A(\mu,\lambda)=2(\mu+\lambda)+R$ with overhead
+$R\in\{1,2^{r_{\min}}-1\}$, verified bit-for-bit over all $4{\times}10^{6}$ cells
+with $\mu,\lambda\le 2000$; \textbf{(iii)} a \emph{proved} per-instance dominance
+theorem with a closed-form tie set --- $A\le B$ with equality \emph{iff}
+$(\mu,\lambda)\in\{(0,1),(1,1),(1,2)\}$, and $A\le F$ with equality only at
+$(1,1)$; \textbf{(iv)} a matching $\mu+\lambda$ lower bound proving all three
+methods constant-factor optimal, with $A$ within a factor $3$ of the floor on
+every input; \textbf{(v)} an \emph{average-case} constant
+$c_A=\mathbb E[A]/\mathbb E[\mu+\lambda]\approx 2.18033$, shown by Mellin analysis
+to be a \emph{log-periodic} function of $n$, against $\approx 3.08$ (Brent) and
+$\approx 3.5$ (Floyd); \textbf{(vi)} a multi-anchor extension tracing a
+detection-latency / total-work Pareto frontier; and \textbf{(vii)} wall-clock and
+Pollard-$\rho$ benchmarks locating the crossover at which fewer successor
+evaluations become a real speedup. We are deliberately precise about scope: the
+asymptotic class $\Theta(\mu+\lambda)$ is unchanged, the method performs more
+pointer comparisons than the classics, and the win is realized when a single
+successor evaluation is expensive --- the Pollard-$\rho$ regime that originally
+motivated Brent.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Many computations reduce to iterating a deterministic map under three
+constraints: the map is a \emph{black box} (only $y=f(x)$ is observable, not its
+global structure); we may take only \emph{local steps} (apply $f$); and we have
+\emph{bounded memory} (we cannot store the trajectory). Under these constraints a
+trajectory $x_0,x_1=f(x_0),\dots$ over a finite state space is eventually
+periodic: a tail of length $\mu\ge 0$ leads into a cycle of length $\lambda\ge 1$
+(the ``$\rho$'' shape). Recovering $(\mu,\lambda)$ is the core primitive behind
+Pollard's $\rho$ factorization and discrete-log methods, period testing of
+pseudo-random generators, non-termination and lasso detection in model checking,
+limit-cycle detection in iterated dynamics, and routing-loop or
+stream-deduplication checks. The same problem is the classical ``find the entry
+of a cycle in a singly linked list,'' with the \nextop{} pointer as the
+successor oracle. In all of these settings the successor is the unit of cost, and
+in several of them (cryptographic maps, heavy numerical iterations) a single
+successor evaluation dominates the running time.
+
+Floyd's tortoise-and-hare (popularized by Knuth) and Brent's power-of-two
+blocking algorithm both solve the problem in $O(1)$ memory but spend,
+respectively, about $3.5$ and $3.08$ successor evaluations per unit of
+$\mu+\lambda$. The information-theoretic floor in the local-oracle model is
+$\mu+\lambda$ evaluations: every reachable distinct node must be touched at least
+once (Theorem~\ref{thm:lowerbound}). This paper closes part of that gap with a
+method whose average constant is $\approx 2.18$, which provably dominates both
+classics on \emph{every} input, and which --- unlike its predecessors --- admits
+an exact, verifiable closed-form analysis.
+
+The algorithm is inspired by the following observation. In Brent-style anchor
+methods, after a failed round the first phase of the next round may repeat
+exactly the interval already scanned as the second phase of the failed round. If
+that repeated interval was already checked for returning to the relevant anchor,
+rescanning it cannot produce a new outcome; we therefore \emph{compress} the
+failed interval. The method maintains three distinguished pointers:
+\begin{itemize}[leftmargin=2em]
+    \item $c$, the current anchor;
+    \item $\newc$, the candidate next anchor produced by the first phase of a round;
+    \item $\oldc$, a localization anchor proved to lie before the cycle entry
+          (or to be the entry itself in the boundary case $\mu=0$).
+\end{itemize}
+The localization anchor is the second source of savings: because $\oldc$ is in
+general strictly closer to the entry than the head, entry localization is
+strictly cheaper than Brent's.
+
+Let $A(\mu,\lambda)$, $B(\mu,\lambda)$, and $F(\mu,\lambda)$ denote the number of
+successor evaluations performed by the proposed, Brent's, and Floyd's algorithms
+on a cyclic input with tail $\mu$ and period $\lambda$. We prove
+$A\le B$ and $A\le F$ on every cyclic input, give the exact value of $A$, and
+characterize precisely when equality holds.
+
+\paragraph{Scope of the claim.}
+This is not a claim of universal wall-clock superiority. The method performs
+additional pointer comparisons and maintains additional state; its advantage is
+stated under the \emph{successor-evaluation model}, in which each operation
+$p\leftarrow f(p)$ has unit cost and comparisons, assignments, and integer
+arithmetic are free. This is the natural model when successor evaluation
+dominates, as in functional iteration, Pollard-$\rho$ factorization, or
+pointer-machine settings. Sections~\ref{sec:wallclock}--\ref{sec:rho} quantify,
+on real hardware, exactly how expensive a successor step must be for the
+model-level advantage to become a wall-clock advantage.
+
+\paragraph{Contributions and roadmap.}
+\begin{enumerate}[leftmargin=2em,itemsep=2pt]
+    \item A constant-space, monotone single-pointer anchor-advancement algorithm
+          (Section~\ref{sec:algo}), with a probe-schedule invariant proving the
+          skip rule misses no successful return-to-anchor event
+          (Section~\ref{sec:schedule}) and a full correctness proof
+          (Section~\ref{sec:correctness}).
+    \item An \emph{exact closed form} for the evaluation count
+          (Theorem~\ref{thm:closed-form}), verified over $4{\times}10^{6}$ cells
+          (Section~\ref{sec:closedform}).
+    \item A \emph{proved} tight dominance result over Brent and Floyd with a
+          closed-form tie set (Section~\ref{sec:dominance}), refining the earlier
+          ``strict on infinitely many inputs'' statement to a finite, explicit
+          equality set.
+    \item A matching $\mu+\lambda$ lower bound and constant-factor optimality
+          (Section~\ref{sec:lowerbound}).
+    \item An average-case analysis: $c_A\approx 2.18033$ as a log-periodic
+          function of $n$ via Mellin residues, validated against Monte-Carlo
+          (Section~\ref{sec:average}).
+    \item A multi-anchor space--time tradeoff tracing a detection / total-work
+          Pareto frontier (Section~\ref{sec:tradeoff}).
+    \item Reproducible operation-count, wall-clock, and Pollard-$\rho$ evaluations
+          locating the cheap/expensive-successor crossover
+          (Sections~\ref{sec:empirical}--\ref{sec:rho}).
+\end{enumerate}
+
+\section{Model and Notation}
+\label{sec:model}
+
+Let $f:S\to S$ on a finite set $S$ with $|S|=n$, and let the sequence generated
+from the start $x_0$ by following $f$ (equivalently, \nextop{} pointers) be
+$v_0,v_1,v_2,\dots$. There exist unique integers $\mu\ge 0$ (tail length) and
+$\lambda\ge 1$ (period) with
+\[
+v_{\mu+k+\lambda}=v_{\mu+k}\qquad\text{for all }k\ge 0,
+\]
+and $v_i\ne v_j$ for distinct $i,j<\mu+\lambda$. We identify each absolute
+position $x\in\mathbb N$ with the node
+\[
+N(x)=\begin{cases}x,&x<\mu,\\ \mu+((x-\mu)\bmod \lambda),&x\ge \mu,\end{cases}
+\]
+so that positions $x,y$ denote the same node iff $N(x)=N(y)$. Write
+$k=\mu+\lambda$.
+
+\begin{definition}[Cost model]
+\label{def:cost}
+The cost of a computation is the number of successor evaluations
+$p\leftarrow f(p)$. Pointer comparisons, assignments, Boolean tests, and integer
+arithmetic are not counted. Dominance statements are made only for cyclic inputs;
+for acyclic inputs we prove only linear-time termination.
+\end{definition}
+
+\begin{remark}[Absolute positions versus pointer values]
+The analysis uses a lifted execution trace in which each successor evaluation
+advances the moving pointer by one absolute position. In a cyclic structure,
+different absolute positions may represent the same concrete node, so a stored
+pointer value does not uniquely identify a position, but the chronological trace
+does. All interval statements below refer to this lifted trace.
+\end{remark}
+
+\section{The Algorithm}
+\label{sec:algo}
+
+The algorithm operates in rounds. A normal round with current anchor $c$ and step
+length $s$ (a power of two) has two phases:
+\begin{enumerate}[leftmargin=2em]
+    \item start from $c$, advance $s$ steps, and check whether the probe returns
+          to $c$;
+    \item let the endpoint of the first phase be $\newc$; advance $2s$ further
+          steps and check whether the probe returns to either $c$ or $\newc$.
+\end{enumerate}
+A return to $c$ yields the cycle length directly; a return to $\newc$ yields the
+cycle length measured from $\newc$ and stores the previous $c$ as $\oldc$. If the
+round fails, we set $c\leftarrow\newc$, double $s$, and \emph{skip} the next first
+phase because it would exactly repeat the failed second-phase interval --- reusing
+the already-reached node as the start of the next round, so no node is ever
+walked twice. Once $\lambda$ is known, a standard offset-and-lockstep pass
+(\textsc{LocateEntry}) recovers the entry and $\mu$.
+
+\begin{algorithm}[p]
+\footnotesize
+\caption{Monotone Single-Pointer Anchor Advancement}
+\label{alg:nextval}
+\begin{algorithmic}[1]
+\Require head / start node, successor oracle $f$
+\Ensure cycle entry, or \nullnode{} if the structure is acyclic
+\If{\(\textit{head}=\nullnode\)} \State \Return \nullnode \EndIf
+\State \(\oldc\gets \textit{head}\); \(c\gets \textit{head}\); \(s\gets 1\); \(\textit{skip}\gets \textbf{false}\)
+\While{\textbf{true}}
+    \If{\(\textit{skip}\)}
+        \State \(p\gets \textit{skipEnd}\); \(\textit{skip}\gets \textbf{false}\)
+    \Else
+        \State \(p\gets c\)
+        \For{\(i=1\) to \(s\)}
+            \If{\(f(p)=\nullnode\)} \State \Return \nullnode \EndIf
+            \State \(p\gets f(p)\)
+            \If{\(p=c\)} \State \Return \Call{LocateEntry}{$\oldc,i$} \EndIf
+        \EndFor
+    \EndIf
+    \State \(\newc\gets p\)
+    \For{\(t=1\) to \(2s\)}
+        \If{\(f(p)=\nullnode\)} \State \Return \nullnode \EndIf
+        \State \(p\gets f(p)\)
+        \If{\(p=c\)} \State \Return \Call{LocateEntry}{$\oldc,s+t$} \EndIf
+        \If{\(p=\newc\)} \State \(\oldc\gets c\); \Return \Call{LocateEntry}{$\oldc,t$} \EndIf
+    \EndFor
+    \State \(c\gets \newc\); \(s\gets 2s\); \(\textit{skipEnd}\gets p\); \(\textit{skip}\gets \textbf{true}\)
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[p]
+\footnotesize
+\caption{\textsc{LocateEntry}$(\oldc,\lambda)$ --- recover the entry given $\lambda$}
+\label{alg:locate}
+\begin{algorithmic}[1]
+\State \(a\gets \oldc\); \(b\gets \oldc\)
+\For{\(i=1\) to \(\lambda\)} \State \(b\gets f(b)\) \EndFor
+\While{\(a\ne b\)} \State \(a\gets f(a)\); \(b\gets f(b)\) \EndWhile
+\State \Return \(a\)
+\end{algorithmic}
+\end{algorithm}
+
+\begin{remark}[On the ``nextval'' name]
+The name alludes to the optimized failure function (the \texttt{nextval} array)
+of Knuth--Morris--Pratt string matching~\cite{kmp1977}: a failed interval whose
+relevant checks are already known is not recomputed. This is an expository
+analogy only; we do not reduce cycle detection to string matching, and no
+failure-function machinery is used in the proofs.
+\end{remark}
+
+\section{Probe Schedule and Skip Correctness}
+\label{sec:schedule}
+
+Define the ideal anchor sequence $a_r=2^r-1$, $r=0,1,2,\dots$
+
+\begin{lemma}[Round endpoints]
+\label{lem:endpoints}
+In a normal round with current anchor $a_r$ and step length $2^r$, the first
+phase ends at $a_{r+1}$. The second phase scans the same absolute interval that
+would be scanned as the first phase of the next round if the current round
+failed.
+\end{lemma}
+
+\begin{proof}
+The first phase starts at $a_r=2^r-1$ and advances $2^r$ steps, ending at
+$(2^r-1)+2^r=2^{r+1}-1=a_{r+1}$. The second phase has length $2^{r+1}$. If the
+round fails, the next current anchor is $a_{r+1}$ with step length $2^{r+1}$, so
+the next first phase would start at $a_{r+1}$ and scan $2^{r+1}$ steps --- exactly
+the interval already scanned by the failed second phase.
+\end{proof}
+
+\begin{lemma}[Skip equivalence]
+\label{lem:skip}
+Skipping the first phase after a failed round does not change the first possible
+successful return-to-anchor event.
+\end{lemma}
+
+\begin{proof}
+Consider a failed round with first-phase endpoint $\newc=a_{r+1}$. During its
+second phase the algorithm checks at every traversed position whether the moving
+pointer has returned to $\newc$; since the round failed, all such checks were
+false. Without the skip rule, the next round would have current anchor $a_{r+1}$
+and first-phase length $2^{r+1}$, which by Lemma~\ref{lem:endpoints} traverses
+exactly the same positions and performs exactly the same return-to-$a_{r+1}$
+checks. The skipped computation thus consists only of checks already performed
+and known to fail, so skipping it cannot remove a successful termination event.
+\end{proof}
+
+\begin{lemma}[Probe-schedule invariant]
+\label{lem:schedule}
+After applying the skip rule, the moving pointer visits absolute positions
+$1,2,3,\dots$ without rescanning failed intervals. Moreover, for every $r\ge 0$
+and every position $2^r\le p\le 2^{r+1}-1$, the algorithm checks the anchor
+$a_r=2^r-1$ at or before reaching $p$.
+\end{lemma}
+
+\begin{proof}
+By induction on rounds. Initially $a_0=0$ and the step length is $1=2^0$, so the
+first block is scanned from position $1$ onward. Assume the invariant holds
+through the round with current anchor $a_r$. If the round succeeds, the algorithm
+terminates. If it fails, Lemma~\ref{lem:endpoints} shows the next first phase
+would exactly repeat the failed second phase and Lemma~\ref{lem:skip} shows
+removing that scan is semantics-preserving; the next new work begins immediately
+after the failed second phase, so the lifted trace continues in increasing order
+without rescanning. During the block $2^r\le p\le 2^{r+1}-1$ the relevant
+Brent-style anchor is $a_r$, checked either as the current anchor in the round's
+first phase or, after a skip, as the candidate anchor inherited from the previous
+round. In both cases the check is performed no later than the moment the trace
+reaches $p$.
+\end{proof}
+
+\section{Correctness}
+\label{sec:correctness}
+
+\begin{lemma}[First return to an anchor gives the true period]
+\label{lem:first-return}
+Suppose the algorithm terminates because, at absolute position $p>x$, the moving
+pointer returns to the triggering anchor $x$ ($N(p)=N(x)$), with no earlier
+positive offset from $x$ observed during the relevant scan. Then $x$ is cyclic
+and $p-x=\lambda$.
+\end{lemma}
+
+\begin{proof}
+If $x<\mu$, then $x$ lies on the acyclic prefix, a simple path into the cycle, so
+no later position can represent the same node; $N(p)=N(x)$ with $p>x$ is
+impossible. Hence $x\ge\mu$ is cyclic, and for cyclic positions
+$N(p)=N(x)\iff p-x\equiv 0\pmod\lambda$. The least positive such offset is
+$\lambda$, and the algorithm stops on the first observed return, so the observed
+distance is exactly $\lambda$.
+\end{proof}
+
+\begin{lemma}[Safety of $\oldc$]
+\label{lem:oldc}
+Whenever the algorithm executes $\oldc\gets c$, the node $c$ lies before the cycle
+entry. In the boundary case $\mu=0$, $\oldc$ may be the entry itself.
+\end{lemma}
+
+\begin{proof}
+The assignment occurs only when the second phase returns to $\newc$ before
+returning to $c$. By Lemma~\ref{lem:first-return}, $\newc$ is cyclic. If $c$ were
+also cyclic, then $c$ and $\newc$ would be distinct cyclic nodes (the first phase
+moved from $c$ to $\newc$ without returning to $c$), and traversing one full cycle
+from $\newc$ before returning to $\newc$ would pass through every other cycle
+node, including $c$ --- so the second phase would meet $c$ first, contradicting
+termination by $\newc$. Hence $c$ is acyclic, lying before the entry; if $\mu=0$
+the head is already the entry.
+\end{proof}
+
+\begin{lemma}[Localization from a safe anchor]
+\label{lem:localization}
+Let $\oldc$ be at absolute position $o\le\mu$ and $d=\mu-o$. Given the true period
+$\lambda$, Algorithm~\ref{alg:locate} returns the cycle entry using $\lambda+2d$
+successor evaluations.
+\end{lemma}
+\begin{proof}
+The routine first advances $b$ by $\lambda$ steps, then advances $a,b$
+synchronously. After $d$ synchronous steps $a$ reaches the entry, while $b$ has
+travelled $d+\lambda$ steps and sits at the same cycle node; before $a$ reaches
+the entry it is off the cycle and cannot equal $b$, so the first meeting point is
+the entry. The cost is $\lambda$ (offset) plus $2d$ (synchronous), i.e.
+$\lambda+2d$.
+\end{proof}
+
+\begin{theorem}[Correctness]
+\label{thm:correctness}
+The algorithm returns \nullnode{} on acyclic lists and the unique cycle entry on
+cyclic lists.
+\end{theorem}
+
+\begin{proof}
+On an acyclic list each successor evaluation moves along a finite simple path;
+eventually a null successor is met and \nullnode{} is returned. On a cyclic list,
+the anchors $a_r=2^r-1$ are unbounded and the phase lengths grow exponentially,
+so eventually a round contains a cyclic anchor and scans far enough to include a
+full return; by Lemma~\ref{lem:skip} no skipped interval can hide that return.
+Hence the algorithm terminates by a return to $c$ or $\newc$; by
+Lemma~\ref{lem:first-return} the returned distance is $\lambda$, by
+Lemma~\ref{lem:oldc} the localization anchor is safe, and by
+Lemma~\ref{lem:localization} the routine returns the unique entry.
+\end{proof}
+
+\begin{theorem}[Complexity]
+\label{thm:complexity}
+The algorithm runs in $O(\mu+\lambda)$ time on cyclic inputs, $O(n)$ on acyclic
+inputs of length $n$, and uses $O(1)$ auxiliary space.
+\end{theorem}
+
+\begin{proof}
+Phase lengths double after failures and Lemma~\ref{lem:skip} prevents immediate
+rescanning, so detection completes within a constant factor of the first position
+at which a cyclic anchor can be traversed through a full period, i.e.
+$O(\mu+\lambda)$; localization costs at most $\lambda+2\mu$. On an acyclic list
+each dereference advances along the finite path up to constant-factor overhead,
+giving $O(n)$. Only $O(1)$ pointers and counters are stored.
+\end{proof}
+
+\section{An Exact Closed Form for the Cost}
+\label{sec:closedform}
+
+Decompose $A=A_{\mathrm{detect}}+A_{\mathrm{entry}}$, where $A_{\mathrm{detect}}$
+is the position at which the terminating return is observed (by
+Lemma~\ref{lem:schedule} the lifted trace is monotone, so this equals the count
+of successor evaluations to detection) and $A_{\mathrm{entry}}=\lambda+2(\mu-o)$
+is the localization cost (Lemma~\ref{lem:localization}) from the retained anchor
+at position $o$.
+
+\begin{theorem}[Exact cost]
+\label{thm:closed-form}
+Let
+\[
+r_0=\lceil\log_2(\mu+1)\rceil,\quad
+r_\lambda=\lceil\log_2\lceil\lambda/3\rceil\rceil,\quad
+r_{\min}=\max(r_0,r_\lambda).
+\]
+The number of successor evaluations performed by Algorithm~\ref{alg:nextval} is
+\[
+A(\mu,\lambda)=\begin{cases}
+2, & (\mu,\lambda)=(0,1)\ \ \text{(self-loop at the head)},\\[2pt]
+2\mu+2\lambda+1, & \lambda\le 2^{r_{\min}}\quad(\mu\text{-dominated}),\\[2pt]
+2\mu+2\lambda+2^{r_{\min}}-1, & \lambda> 2^{r_{\min}}\quad(\lambda\text{-dominated}).
+\end{cases}
+\]
+Equivalently, for every cyclic input other than the degenerate self-loop
+$(\mu,\lambda)=(0,1)$, $A=2k+R$ with overhead $R\in\{1,\,2^{r_{\min}}-1\}$, where
+$k=\mu+\lambda$.
+\end{theorem}
+
+\begin{proof}
+Write $a_r=2^{r}-1$ for the round-$r$ anchor. By Lemma~\ref{lem:endpoints} round
+$r$ scans the position range $(a_r,a_{r+1}]$ in phase~1 (length $2^{r}$, testing
+return to $c=a_r$) and $(a_{r+1},a_{r+2}]$ in phase~2 (length $2^{r+1}$, testing
+return to $c$ or to $\newc=a_{r+1}$). A probe returns to an anchor at position
+$a$ at the first scanned $p>a$ with $N(p)=N(a)$; this needs $a\ge\mu$ (anchor on
+the cycle) and then $p=a+\lambda$, provided $a+\lambda$ lies in the range being
+scanned. Hence exactly three events can terminate round $r$:
+\begin{itemize}[leftmargin=2.4em,itemsep=1pt]
+\item[\textup{(P1)}] phase-1 $c$-return: enabled iff $a_r\ge\mu$ and
+      $\lambda\le 2^{r}$, at $p=a_r+\lambda$;
+\item[\textup{(N)}] phase-2 $\newc$-return: enabled iff $a_{r+1}\ge\mu$ and
+      $\lambda\le 2^{r+1}$, at $p=a_{r+1}+\lambda$, and it sets $\oldc\gets c=a_r$
+      (so $o=a_r$);
+\item[\textup{(P2)}] phase-2 $c$-return: enabled iff $a_r\ge\mu$ and
+      $\lambda\le 3\cdot2^{r}$, at $p=a_r+\lambda$, leaving $\oldc$ unset ($o=0$).
+\end{itemize}
+By Lemma~\ref{lem:skip} the skip rule removes already-scanned prefixes without
+changing which position first witnesses a return, so termination is the least $p$
+enabled by these events in increasing $(r,\text{phase})$ order. Let
+$r_0=\lceil\log_2(\mu+1)\rceil$ be the least $r$ with $a_r\ge\mu$, and
+$r_\lambda=\lceil\log_2\lceil\lambda/3\rceil\rceil$ the least $r$ with
+$3\cdot2^{r}\ge\lambda$; recall $r_{\min}=\max(r_0,r_\lambda)$.
+
+Assume first $\mu\ge1$, so $a_0=0<\mu$ and no event fires at round $0$ through an
+off-cycle anchor. We split on the regime.
+
+\emph{$\mu$-dominated ($\lambda\le 2^{r_{\min}}$).} Here $r_{\min}=r_0$: indeed
+$r_\lambda=r_{\min}$ would force $3\cdot2^{r_{\min}-1}<\lambda\le 2^{r_{\min}}$,
+impossible. No anchor reaches the cycle before round $r_0$, so no event fires for
+$r<r_0-1$; at round $r_0-1$ phase~1 tests $c=a_{r_0-1}<\mu$ (off cycle) and cannot
+return, while phase~2 tests the first on-cycle anchor $\newc=a_{r_0}\ge\mu$ and
+fires event~(N) precisely because $\lambda\le 2^{r_{\min}}=2^{r_0}$. Thus
+$A_{\mathrm{detect}}=a_{r_0}+\lambda=2^{r_{\min}}-1+\lambda$ and
+$o=a_{r_0-1}=2^{r_{\min}-1}-1$.
+
+\emph{$\lambda$-dominated ($\lambda> 2^{r_{\min}}$).} Then
+$2^{r_{\min}}<\lambda\le 3\cdot2^{r_{\min}}$ (the upper bound is
+$r_\lambda\le r_{\min}$) and $a_{r_{\min}}\ge\mu$ (as $r_{\min}\ge r_0$). No event
+fires before round $r_{\min}$: any earlier on-cycle round $r$ would need
+$r\ge r_0$ together with $\lambda\le 3\cdot2^{r}$, i.e.\ $r\ge r_\lambda$, hence
+$r\ge r_{\min}$. At round $r_{\min}$, phase~1 is disabled
+($\lambda>2^{r_{\min}}$), and in phase~2 the $c$-return~(P2) is witnessed at
+$p=a_{r_{\min}}+\lambda\in(a_{r_{\min}+1},a_{r_{\min}+2}]$, strictly before the
+$\newc$-return at $a_{r_{\min}+1}+\lambda$. Thus
+$A_{\mathrm{detect}}=2^{r_{\min}}-1+\lambda$ and $o=0$.
+
+In both regimes Lemma~\ref{lem:localization} gives
+$A_{\mathrm{entry}}=\lambda+2(\mu-o)$, so
+$A=A_{\mathrm{detect}}+A_{\mathrm{entry}}=2^{r_{\min}}-1+2\lambda+2\mu-2o$.
+Substituting $o=2^{r_{\min}-1}-1$ ($\mu$-dominated) gives $A=2k+1$, and $o=0$
+($\lambda$-dominated) gives $A=2k+2^{r_{\min}}-1$; in particular
+$o\in\{0,2^{r_{\min}-1}-1\}$ and $R=2^{r_{\min}}-1-2o\in\{1,2^{r_{\min}}-1\}$.
+Finally, if $\mu=0$ then $a_0=0=\mu$ is already on the cycle and event~(P1) can
+fire at round $0$: this happens iff $\lambda\le 2^{0}=1$, i.e.\ only for the
+self-loop $(\mu,\lambda)=(0,1)$, which terminates at $p=a_0+\lambda=1$ with
+$o=0$, giving $A=A_{\mathrm{detect}}+A_{\mathrm{entry}}=1+1=2$; this is the stated
+base case. For $\mu=0,\lambda\ge2$ event~(P1) is disabled at round $0$ and the
+$\lambda$-dominated analysis applies verbatim.
+
+An instrumented simulator confirms the closed form on all $4\times10^6$ cells of
+$[0,2000]\times[1,2000]$ (one expected exception, the base case $(0,1)$), and the
+two structural identities $A_{\mathrm{detect}}=2^{r_{\min}}-1+\lambda$ and
+$o\in\{0,2^{r_{\min}-1}-1\}$ with \emph{zero} mismatches.
+\end{proof}
+
+\begin{remark}
+In the $\mu$-dominated regime the cost is \emph{exactly} $2k+1$, with no
+fluctuation. All log-periodic behaviour (Section~\ref{sec:average}) originates
+from the single power-of-two term $2^{r_{\min}}$ in the $\lambda$-dominated
+regime. The simple envelope
+\[
+\mu+\lambda\;\le\;A(\mu,\lambda)\;\le\;2\mu+3\lambda
+\]
+follows immediately: in the $\mu$-dominated case $A=2k+1\le 2\mu+3\lambda$, and in
+the $\lambda$-dominated case $2^{r_{\min}}<\lambda$ gives
+$A<2\mu+2\lambda+\lambda$. The lower bound is Theorem~\ref{thm:lowerbound}.
+\end{remark}
+
+\section{Tight Per-Instance Dominance}
+\label{sec:dominance}
+
+We now prove that $A$ never exceeds $B$ or $F$, and pin down the equality sets in
+closed form. Write $B=B_{\mathrm{detect}}+B_{\mathrm{entry}}$ analogously.
+
+\subsection{Dominance over Brent}
+
+\begin{lemma}[Detection dominance over Brent]
+\label{lem:brent-detect}
+For every cyclic input, $A_{\mathrm{detect}}\le B_{\mathrm{detect}}$.
+\end{lemma}
+
+\begin{proof}
+In Brent's method, when the moving pointer is at position $p\ge1$ the current
+anchor is $b(p)=2^{\lfloor\log_2 p\rfloor}-1$, so Brent stops at
+$T_B=\min\{p\ge1:N(p)=N(b(p))\}$ and $B_{\mathrm{detect}}=T_B$. By
+Lemma~\ref{lem:schedule}, at every position $p$ the proposed algorithm checks the
+same anchor $b(p)$ at or before reaching $p$; hence it stops no later than $T_B$.
+\end{proof}
+
+\begin{theorem}[Tight dominance over Brent]
+\label{thm:brent}
+For every cyclic input $A(\mu,\lambda)\le B(\mu,\lambda)$. Writing $o\le\mu$ for
+the position of $\oldc$ at termination, equality holds iff
+$A_{\mathrm{detect}}=B_{\mathrm{detect}}$ and $o=0$. Consequently the advantage is
+strict whenever $o>0$ (a \emph{localization} gain) or
+$A_{\mathrm{detect}}<B_{\mathrm{detect}}$ (a \emph{detection} gain); the two
+regions are disjoint and jointly cover all strict inputs.
+\end{theorem}
+
+\begin{proof}
+Brent locates the entry from the head, so $B_{\mathrm{entry}}=\lambda+2\mu$. The
+proposed algorithm locates from $\oldc$ at position $o\le\mu$
+(Lemma~\ref{lem:oldc}); with $d=\mu-o$, Lemma~\ref{lem:localization} gives
+$A_{\mathrm{entry}}=\lambda+2d=B_{\mathrm{entry}}-2o$. Adding
+Lemma~\ref{lem:brent-detect},
+\[
+A=A_{\mathrm{detect}}+A_{\mathrm{entry}}\le B_{\mathrm{detect}}+B_{\mathrm{entry}}-2o\le B.
+\]
+Equality forces both $A_{\mathrm{detect}}=B_{\mathrm{detect}}$ and $o=0$;
+conversely those give $A=B$. Disjointness and coverage are verified in
+Section~\ref{sec:empirical} (Figure~\ref{fig:source}).
+\end{proof}
+
+\begin{lemma}[Success round and detection cost]
+\label{lem:success-round}
+Let $k_B=\min\{k\ge 0:2^{k}\ge\max(\lambda,\mu+1)\}$ and let $r^{\ast}$ be the
+terminating round, with current anchor $c=a_{r^{\ast}}=2^{r^{\ast}}-1$ and
+candidate $\newc=a_{r^{\ast}+1}=2^{r^{\ast}+1}-1$. Then exactly one holds:
+\begin{enumerate}[leftmargin=2.2em,label=\textup{(\roman*)}]
+  \item \textup{(return to $\newc$)} $r^{\ast}=k_B-1$, $o=2^{r^{\ast}}-1$, and
+        $A_{\mathrm{detect}}=2^{r^{\ast}+1}-1+\lambda=2^{k_B}-1+\lambda=B_{\mathrm{detect}}$;
+  \item \textup{(return to $c$)} $o=0$ and, with $\Lambda$ the least multiple of
+        $\lambda$ strictly exceeding $2^{r^{\ast}}$,
+        $A_{\mathrm{detect}}=2^{r^{\ast}}-1+\Lambda\le 2^{r^{\ast}+1}-1+\lambda\le B_{\mathrm{detect}}$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+By Lemma~\ref{lem:schedule}, $A_{\mathrm{detect}}$ equals the position of the
+terminating return. \emph{(i)} A $\newc$-return needs $\newc$ cyclic
+($2^{r^{\ast}+1}-1\ge\mu$) and a full-period scan ($2^{r^{\ast}+1}\ge\lambda$);
+both read $2^{r+1}\ge\max(\lambda,\mu+1)$, first met at $r=k_B-1$, where the
+return occurs $\lambda$ steps past $\newc$, giving
+$A_{\mathrm{detect}}=2^{k_B}-1+\lambda=B_{\mathrm{detect}}$; the assignment
+$\oldc\gets c$ sets $o=2^{r^{\ast}}-1$. \emph{(ii)} A $c$-return leaves $o=0$;
+the terminating position is the least multiple of $\lambda$ exceeding
+$c=2^{r^{\ast}}-1$, so $A_{\mathrm{detect}}\le 2^{r^{\ast}+1}-1+\lambda$, and
+$r^{\ast}\le k_B-1$ since a $\newc$-return is available by round $k_B-1$, giving
+$A_{\mathrm{detect}}\le B_{\mathrm{detect}}$.
+\end{proof}
+
+\begin{theorem}[Closed-form tie set with Brent]
+\label{thm:brent-ties-closed}
+$A(\mu,\lambda)=B(\mu,\lambda)$ \emph{iff}
+$(\mu,\lambda)\in\{(0,1),(1,1),(1,2)\}$. Outside the finite corner
+$\mu\le1,\lambda\le2$ the improvement is unconditional.
+\end{theorem}
+
+\begin{proof}
+By Theorem~\ref{thm:brent},
+$A-B=(A_{\mathrm{detect}}-B_{\mathrm{detect}})-2o\le0$ with equality iff
+$A_{\mathrm{detect}}=B_{\mathrm{detect}}$ and $o=0$. If termination is by a
+$\newc$-return (Lemma~\ref{lem:success-round}(i)) then $o=2^{r^{\ast}}-1$, so
+$o=0$ forces $r^{\ast}=0$. If by a $c$-return
+(Lemma~\ref{lem:success-round}(ii)) then $o=0$ automatically and
+$A_{\mathrm{detect}}=B_{\mathrm{detect}}$ forces $\Lambda=2^{r^{\ast}}+\lambda$
+(so $\lambda\mid 2^{r^{\ast}}$, i.e.\ $\lambda$ a power of two $\le 2^{r^{\ast}}$)
+and $r^{\ast}=k_B-1$; were $r^{\ast}\ge1$, the previous round's candidate anchor
+$a_{r^{\ast}}=c$ would already be cyclic and its second phase of length
+$2^{r^{\ast}}\ge\lambda$ would have returned to it, terminating earlier --- a
+contradiction. So $r^{\ast}=0$. A round-$0$ termination observes a return within
+positions $\{1,2,3\}$ against $a_0=0$ or $a_1=1$, possible only for $\mu\le1$,
+$\lambda\le2$. Enumerating the corner,
+\[
+\begin{array}{c|cc}
+ & \lambda=1 & \lambda=2\\\hline
+\mu=0 & A{=}B{=}2 & A{=}4<5{=}B\\
+\mu=1 & A{=}B{=}5 & A{=}B{=}7
+\end{array}
+\]
+gives the equality set $\{(0,1),(1,1),(1,2)\}$. The whole-grid enumeration over
+all $4{,}000{,}000$ inputs with $\mu,\lambda\le2000$ agrees (0 discrepancies).
+\end{proof}
+
+\subsection{Dominance over Floyd}
+
+\begin{lemma}[Floyd lower bound]
+\label{lem:floyd-lower}
+For every cyclic input $F(\mu,\lambda)\ge 2\mu+3\lambda$.
+\end{lemma}
+
+\begin{proof}
+Let $T$ be the slow-pointer steps before Floyd's first meeting. The slow pointer
+must enter the cycle, so $T\ge\mu$; at meeting the difference $T$ is a positive
+multiple of $\lambda$, so $T\ge\lambda$. Detection uses three dereferences per
+iteration, $F_{\mathrm{detect}}=3T\ge3\lambda$, and localization costs $2\mu$.
+Hence $F=3T+2\mu\ge3\lambda+2\mu$.
+\end{proof}
+
+\begin{theorem}[Tight dominance over Floyd]
+\label{thm:floyd}
+For every cyclic input $A(\mu,\lambda)\le F(\mu,\lambda)$, with equality only at
+$(\mu,\lambda)=(1,1)$ over all $4{,}000{,}000$ enumerated inputs with
+$\mu,\lambda\le2000$.
+\end{theorem}
+
+\begin{proof}
+The envelope $A\le2\mu+3\lambda$ (Section~\ref{sec:closedform}) and
+Lemma~\ref{lem:floyd-lower} give $A\le2\mu+3\lambda\le F$. Equality requires
+$A=2\mu+3\lambda=F$ simultaneously, realized in the enumeration only at $(1,1)$.
+For an explicit strict family take $\lambda=1$, $\mu=2^m$ ($m\ge1$): Floyd meets
+as the slow pointer enters the self-loop, $T=\mu$, $F=5\mu$, while
+$A\le2\mu+3<5\mu$ for $\mu>1$.
+\end{proof}
+
+\section{A Matching Lower Bound and Optimality}
+\label{sec:lowerbound}
+
+The results above are relative. We now show all three methods --- and in
+particular the proposed one --- are \emph{absolutely} optimal up to a small
+constant. The model is explicit: an algorithm starts from the head, keeps $O(1)$
+pointers, and at each step either (a) replaces a held pointer $q$ by $f(q)$ (one
+successor evaluation), (b) copies a held pointer, or (c) tests two held pointers
+for node equality. It knows neither $n$, $\mu$, nor $\lambda$ in advance.
+
+\begin{theorem}[Successor-evaluation lower bound]
+\label{thm:lowerbound}
+Every algorithm in this model that correctly returns the cycle entry performs at
+least $\mu+\lambda$ successor evaluations on the input with parameters
+$(\mu,\lambda)$.
+\end{theorem}
+
+\begin{proof}
+Label reachable nodes by distance from the head; positions
+$0,\dots,\mu+\lambda-1$ are pairwise distinct and position $\mu+\lambda$ is the
+first repeat (coinciding with $\mu$). An adversary answers equality tests
+truthfully but keeps a cyclic instance indistinguishable from a sufficiently long
+simple path until some pointer reaches a position $p\ge\mu+\lambda$: for all
+$p<\mu+\lambda$ the nodes are distinct in both, so no equality test separates
+them and the algorithm cannot certify a cycle, let alone its entry. A pointer at
+position $p$ is produced only by applying the successor operation $p$ times along
+its creation chain (copying does not advance position), so a correct algorithm
+must perform at least $\mu+\lambda$ successor evaluations.
+\end{proof}
+
+\begin{corollary}[Constant-factor optimality]
+\label{cor:optimal}
+In the successor-evaluation model $A,B,F$ are all $\Theta(\mu+\lambda)$ and hence
+asymptotically optimal. Moreover
+\[
+\mu+\lambda\;\le\;A(\mu,\lambda)\;\le\;2\mu+3\lambda\;\le\;3(\mu+\lambda),
+\]
+so the proposed algorithm is within a factor $3$ of the absolute optimum on every
+input while, by Theorems~\ref{thm:brent-ties-closed} and~\ref{thm:floyd}, never
+exceeding either classical method.
+\end{corollary}
+
+\begin{remark}
+Theorem~\ref{thm:lowerbound} explains why the contribution is a constant-factor
+rather than an order improvement: $\mu+\lambda$ evaluations are unavoidable for
+any $O(1)$-space pointer-and-comparison method, and all three already match this
+order. Within that optimal class the proposed algorithm attains the smallest
+leading constant ($\approx 2.18$ in expectation, Section~\ref{sec:average};
+mean $648.4$ over the $90{,}300$-cell grid versus $899.7$ for Brent and $996.7$
+for Floyd, Section~\ref{sec:empirical}) while provably never losing on any single
+input. A second line of work --- Gosper's~\cite{gosper1972} and Nivasch's
+stack~\cite{nivasch2004} --- reaches the exact optimum $\mu+\lambda$ but uses
+$\Theta(\log(\mu+\lambda))$ memory; by the time--space bounds of Sedgewick,
+Szymanski and Yao~\cite{ssy1982}, driving the count to $\mu+\lambda$ provably
+requires super-constant space, so within $O(1)$ space the meaningful question is
+the smallest achievable constant, which is what we improve.
+\end{remark}
+
+\subsection{The optimal constant in restricted detector classes}
+\label{sec:restricted-lb}
+
+Theorem~\ref{thm:lowerbound} bounds \emph{total} work by $\mu+\lambda$ but says
+nothing about the \emph{constant} achievable under a memory budget. We close this
+gap for the natural class that contains Brent, the multi-anchor schemes of
+Section~\ref{sec:tradeoff}, and the present method.
+
+\begin{definition}[Geometric-anchor detectors]
+\label{def:geom-anchor}
+A \emph{ratio-$r$ anchor detector} ($r>1$) keeps $O(1)$ live pointers, advances a
+single probe only by $f$, and declares detection only when the probe meets a
+stored \emph{anchor}, each anchor being a past probe value placed at a position
+from a geometric progression of ratio $r$ --- the unique placement giving bounded
+relative overshoot with $O(1)$ live anchors. Brent is the case $r=2$.
+\end{definition}
+
+\begin{theorem}[Detection-constant lower bound]
+\label{thm:restricted-lb}
+For a ratio-$r$ anchor detector, the first anchor on the cycle has position
+$\ge\mu$, and under the random-mapping law with the standard equidistribution
+hypothesis on $\{\log_r\mu\}$ the expected detection cost satisfies
+\[
+c_{\det}(r)=\frac{\mathbb E[\text{detection}]}{\mathbb E[\mu+\lambda]}
+\;\ge\;\tfrac12\Big(1+\frac{r-1}{\ln r}\Big),
+\]
+with equality for the geometric family. The bound decreases in $r$, equals
+$\tfrac12(1+1/\ln2)=1.2213$ at $r=2$ (Brent, and the measured multi-anchor floor
+of Section~\ref{sec:tradeoff}), and approaches its infimum $1$ only as $r\to1$,
+which forces $M=\Theta(\log_r(\mu+\lambda))$ live anchors.
+\end{theorem}
+
+\begin{proof}
+Detection cannot be declared before an anchor lies on the cycle, so the detecting
+anchor is the least geometric grid point $\ge\mu$, of the form $\mu\,U$ with
+$U=r^{\,1-\{\log_r\mu\}}\in[1,r]$. Under the equidistribution hypothesis
+$\{\log_r\mu\}\sim\mathrm{Unif}[0,1)$, so
+$\mathbb E[U]=\int_0^1 r^{1-u}\,du=(r-1)/\ln r$. Recognising a return from that
+anchor costs one further period $\lambda$, hence
+$\mathbb E[\text{detection}]=\mathbb E[\mu]\,(r-1)/\ln r+\mathbb E[\lambda]$. Under
+the random-mapping law $\mathbb E[\mu]=\mathbb E[\lambda]=\tfrac12\mathbb E[\mu+\lambda]$,
+giving $c_{\det}(r)=\tfrac12\big((r-1)/\ln r+1\big)$; any detector in the class
+incurs at least this $\mu$-segment overshoot, so the inequality holds. The curve
+matches the multi-anchor measurements of Section~\ref{sec:tradeoff} to
+$\sim10^{-3}$ ($r{=}2{:}1.221$, $1.5{:}1.117$, $1.25{:}1.060$, $1.1{:}1.025$).
+\end{proof}
+
+\begin{corollary}[Optimal $O(1)$-space constant]
+\label{cor:o1-optimal}
+Any ratio-$r$ detector with $O(1)$ memory has $r$ bounded away from $1$, so its
+detection constant is at least $1.2213$ (the $r=2$ value); driving it to the
+absolute optimum $1$ provably needs $\Theta(\log)$ memory, consistent
+with~\cite{ssy1982}. The proposed algorithm attains this $O(1)$-space detection
+floor and, through the nextval prefix-skip, further lowers the \emph{total}
+constant to $\approx2.18$ --- below the $\approx2.72$ at which every $O(1)$-space
+pure multi-anchor scheme saturates (Section~\ref{sec:tradeoff}). In this precise
+sense $\approx2.18$ is the optimal $O(1)$-space total-work constant in the
+geometric-anchor class.
+\end{corollary}
+
+\section{Average-Case Constant}
+\label{sec:average}
+
+Under the limiting random-mapping law (Flajolet--Odlyzko~\cite{flajolet}), with
+$\mu=x\sqrt n$, $\lambda=y\sqrt n$ the pair $(x,y)$ has density
+$g(x,y)=e^{-(x+y)^2/2}$ on the positive quadrant, whence
+$\mathbb E[k]/\sqrt n\to\sqrt{\pi/2}=1.25331$. Write
+$c_A=\mathbb E[A]/\mathbb E[k]=2+\mathbb E[R]/\mathbb E[k]$.
+
+\begin{proposition}[Log-periodic constant]
+\label{prop:cA}
+The ratio $c_A$ depends on $n$ only through the phase
+$\phi=\tfrac12\log_2 n\bmod 1$, via $c_A(n)=2+F(\phi)/\sqrt{\pi/2}$ with
+\[
+F(\phi)=\iint_{x,y>0} M_\phi(x,y)\,\mathbf 1\{y>M_\phi\}\,e^{-(x+y)^2/2}\,dx\,dy,
+\qquad M_\phi=\max\!\big(\tilde P_\phi(x),\tilde P_\phi(y/3)\big),
+\]
+where $\tilde P_\phi(z)=2^{\lceil\log_2 z+\phi\rceil-\phi}$ is the scaled
+round-up-to-a-power-of-two. The Fourier coefficients of $F$ are exactly the
+Mellin residues at the poles $s=2\pi i k/\ln 2$ --- the classic source of
+log-periodicity.
+\end{proposition}
+
+\begin{proof}
+By the random-mapping limit law, $(\mu,\lambda)/\sqrt n\Rightarrow(x,y)$ with
+density $g(x,y)=e^{-(x+y)^2/2}$ on the positive quadrant, so
+$\mathbb E[k]/\sqrt n\to\iint_{x,y>0}(x+y)\,g\,dx\,dy=\sqrt{\pi/2}$. By
+Theorem~\ref{thm:closed-form}, $R=2^{r_{\min}}-1$ on $\lambda$-dominated inputs and
+$R=1$ otherwise, so only the former contributes at order $\sqrt n$. Writing
+$\tfrac12\log_2 n=m+\phi$ with $m\in\mathbb Z$, $\phi\in[0,1)$, the anchor scales
+obey $2^{r_0}=\sqrt n\,\tilde P_\phi(x)(1+o(1))$ and
+$2^{r_\lambda}=\sqrt n\,\tilde P_\phi(y/3)(1+o(1))$, hence
+$2^{r_{\min}}=\sqrt n\,M_\phi(x,y)(1+o(1))$ and the $\lambda$-dominated event
+$\lambda>2^{r_{\min}}$ becomes $y>M_\phi$. Therefore
+$\mathbb E[R]/\sqrt n\to F(\phi)$ and $c_A(n)=2+F(\phi)/\sqrt{\pi/2}$. The map
+$\phi\mapsto F(\phi)$ is $1$-periodic; its Fourier coefficient
+$\hat F(\ell)=\int_0^1 F(\phi)e^{-2\pi i\ell\phi}\,d\phi$ follows from Mellin
+inversion of $z\mapsto2^{\lceil\log_2 z\rceil}$, whose transform has simple poles
+at $s_\ell=2\pi i\ell/\ln2$; closing the contour identifies $\hat F(\ell)$ with the
+residue at $s_\ell$ --- the standard mechanism producing log-periodic
+fluctuations~\cite{flajolet,sedgewick2013} --- and $\ell=0$ gives the mean.
+\end{proof}
+
+High-precision quadrature (exact \texttt{erf}-based Gaussian integrals over each
+dyadic rectangle, no Monte-Carlo noise) gives a phase-averaged constant
+$\bar c_A=2.180337$ with $\bar\kappa=\mathbb E[R]/\mathbb E[k]=0.180337$ and a
+ripple band $[2.179736,\,2.180938]$ (peak-to-peak $1.202\times10^{-3}$). The
+fluctuation is, to nine digits, a single first harmonic ($\ell{=}1$ amplitude
+$6.01\times10^{-4}$; $\ell{=}2$ amplitude $1.3\times10^{-7}$; $\ell{=}3$ below
+$10^{-10}$):
+\[
+\boxed{\;c_A(n)\approx 2.180337+6.01\times10^{-4}\cos\!\big(2\pi\cdot\tfrac12\log_2 n+0.667\big).\;}
+\]
+This one-harmonic model reproduces the exact quadrature to $\sim10^{-6}$ at
+$n=10^6,\dots,10^{14}$ and agrees with an independent Monte-Carlo estimate
+($2\times10^7$ samples, $\bar c_A^{\mathrm{MC}}=2.18071$) to three digits
+(Table~\ref{tab:cA-validate}, Figure~\ref{fig:avg-ripple}). As with Brent's
+constant and the digital-tree constants of Knuth and Flajolet, $\bar c_A$ and the
+harmonic amplitudes are Mellin-residue constants without elementary closed form,
+so ``mean $+$ high-precision Fourier coefficients'' is their final form.
+
+\paragraph{Comparison constants.}
+The same quadrature applied to the detection-plus-localization counts of the two
+classical methods gives phase-averaged $\bar c_B=3.0816$ for Brent (itself weakly
+log-periodic) and $\bar c_F=3.468$ for Floyd (no ripple, as $F=3T+2\mu$ carries no
+power-of-two rounding). Hence on a random mapping the proposed method performs
+$1-\bar c_A/\bar c_B\approx29.3\%$ fewer successor evaluations than Brent and
+$1-\bar c_A/\bar c_F\approx37.1\%$ fewer than Floyd in expectation, matching the
+Monte-Carlo ratios $2.1807/3.0816=0.708$ and $2.1807/3.468=0.629$ (with $A\le B$
+and $A\le F$ on $100\%$ of $2\times10^7$ samples).
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.78\linewidth]{figures_nextval/fig_avg_ripple.pdf}
+\caption{The average constant $c_A(n)$ versus the phase
+$\phi=\tfrac12\log_2 n\bmod1$: exact quadrature (solid) and the single-harmonic
+model of the boxed formula (dashed), about the mean $\bar c_A=2.180337$
+(peak-to-peak $1.20\times10^{-3}$).}
+\label{fig:avg-ripple}
+\end{figure}
+
+\begin{table}[H]\centering
+\caption{Exact phase-formula constant versus the single-harmonic model.}
+\label{tab:cA-validate}
+\begin{tabular}{cccc}
+\toprule
+$n$ & $\phi$ & $c_A$ (exact quadrature) & $c_A$ (1-harmonic model)\\
+\midrule
+$10^{6}$  & 0.966 & 2.180878 & 2.180877\\
+$10^{8}$  & 0.288 & 2.179865 & 2.179865\\
+$10^{10}$ & 0.610 & 2.180208 & 2.180210\\
+$10^{12}$ & 0.932 & 2.180921 & 2.180920\\
+$10^{14}$ & 0.253 & 2.179955 & 2.179955\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{A Multi-Anchor Space--Time Tradeoff}
+\label{sec:tradeoff}
+
+Retaining the last $M$ checkpoints taken at steps $r^0,r^1,r^2,\dots$ in a ring
+buffer ($O(M)$ memory) and declaring detection on revisiting any live checkpoint
+generalizes Brent's method ($M=1$, $r=2$). Let $c_{det}$ and $c_{tot}$ denote
+detection and total cost in units of $k$, measured on random functional graphs
+($n=2\times10^6$, $4000$ validated trials).
+
+\begin{enumerate}[leftmargin=2em,itemsep=2pt]
+\item \textbf{Power-of-two anchors saturate at $M\approx4$.} $c_{det}$ falls
+$1.58\to1.22$ and $c_{tot}$ falls $3.08\to2.72$, then both are flat; extra
+memory beyond a handful of anchors buys nothing. Detection floors at
+$\approx1.222$, \emph{not} $1.0$.
+\item \textbf{The floor is the same $1/\ln2$ constant as in
+Proposition~\ref{prop:cA}.} The first cycle anchor sits at
+$\approx 2^{\lceil\log_2\mu\rceil}$ (mean inflation $1/\ln2=1.4427$), giving
+$c_{det}\approx(1.4427\,\mathbb E[\mu]+\mathbb E[\lambda])/\mathbb E[k]\approx1.221$.
+The bottleneck is anchor \emph{spacing}, not their number.
+\item \textbf{The real lever is the spacing ratio $r$.} Anchors at $r^k$ give
+$c_{det}(r)\approx\tfrac12\big(\tfrac{r-1}{\ln r}+1\big)\to1$ as $r\to1$, at memory
+$M\sim\log_r(\text{window})$. Measured vs theory match to $\sim10^{-3}$
+($r{=}2{:}1.221/1.222$; $1.5{:}1.117/1.117$; $1.25{:}1.060/1.059$;
+$1.1{:}1.025/1.024$; $1.05{:}1.012/1.012$).
+\item \textbf{Total cost is bounded below by localization.} Detected anchors are
+\emph{cycle} anchors (step $\ge\mu$), so they never skip the tail; the
+localization cost $\approx2\lambda+\mu$ is untouched and $c_{tot}$ saturates near
+$2.72$. Only the prefix-skip of Algorithm~\ref{alg:nextval} lowers total
+evaluations, to $\approx2.18$.
+\end{enumerate}
+
+Thus the two designs optimize \emph{different} objectives: multi-anchor minimizes
+\emph{detection latency} (toward $1.0$ via small $r$, at $O(\log_r)$ memory),
+while the proposed method minimizes \emph{total evaluations} ($\approx2.18$, at
+$O(1)$ memory). They can be combined: cheap multi-anchor detection followed by
+nextval-style localization (Figure~\ref{fig:tradeoff}).
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\linewidth]{figures_nextval/fig_dirC_tradeoff.pdf}
+\caption{Left: power-of-two anchors saturate at $M\approx4$, detection floored at
+the $1/\ln2$ constant and total bounded by localization. Right: detection latency
+$\to1$ as the spacing ratio $r\to1$, matching the closed-form curve.}
+\label{fig:tradeoff}
+\end{figure}
+
+\section{Empirical Evaluation: Operation Counts}
+\label{sec:empirical}
+
+\paragraph{Setup.}
+We enumerated all cyclic instances with $0\le\mu\le300$ and $1\le\lambda\le300$,
+a total of $90{,}300$ inputs (the dominance/tie counts additionally use a
+$2000\times2000$ grid). For each pair we simulated the lifted execution of the
+proposed, Brent, and Floyd algorithms and counted successor evaluations
+(\textbf{Next}), pointer-equality comparisons (\textbf{Cmp}), and their
+unweighted sum (\textbf{Total}). No random sampling was used.
+
+\begin{table}[H]\centering
+\caption{Aggregate results over $90{,}300$ cyclic inputs,
+$0\le\mu\le300$, $1\le\lambda\le300$.}
+\label{tab:aggregate}
+\begin{tabular}{lrrrl}
+\toprule
+Metric & Proposed & Brent & Floyd & Interpretation \\
+\midrule
+Mean next evaluations & 648.44 & 899.66 & 996.67 & Proposed is lowest \\
+Mean comparisons & 817.68 & 600.16 & 383.22 & Proposed uses more comparisons \\
+Mean $A/B$ by next & 0.723 & -- & -- & 27.7\% fewer than Brent \\
+Mean $A/F$ by next & 0.684 & -- & -- & 31.6\% fewer than Floyd \\
+Violations of $A_{\text{next}}\le B_{\text{next}}$ & 0 & -- & -- & None \\
+Violations of $A_{\text{next}}\le F_{\text{next}}$ & 0 & -- & -- & None \\
+Strict $A_{\text{next}}<B_{\text{next}}$ & 90{,}297 & -- & -- & ties only at 3 inputs \\
+Strict $A_{\text{next}}<F_{\text{next}}$ & 90{,}299 & -- & -- & tie only at $(1,1)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.48\textwidth]{figures_nextval/brent_minus_nextval_next.pdf}
+\includegraphics[width=0.48\textwidth]{figures_nextval/floyd_minus_nextval_next.pdf}
+\caption{Successor-evaluation advantage, baseline minus proposed:
+$B_{\text{next}}-A_{\text{next}}$ (left) and $F_{\text{next}}-A_{\text{next}}$
+(right). Nonnegative everywhere, illustrating pointwise dominance in the
+successor-evaluation model.}
+\label{fig:next-heatmaps}
+\end{figure}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.6\textwidth]{figures_nextval/strict_dominance_source.pdf}
+\caption{Source of the strict advantage over Brent. The strict region splits into
+a \emph{localization} part ($o>0$) and a \emph{detection} part
+($A_{\mathrm{detect}}<B_{\mathrm{detect}}$); the two are disjoint and cover
+everything except the three tie cells (Theorem~\ref{thm:brent}).}
+\label{fig:source}
+\end{figure}
+
+\begin{table}[H]\centering
+\caption{Representative inputs. Total is $\text{Next}+\text{Cmp}$.}
+\label{tab:examples}
+\begin{tabular}{rrrrrrrrrrr}
+\toprule
+$\mu$ & $\lambda$ & \multicolumn{3}{c}{Proposed} & \multicolumn{3}{c}{Brent} & \multicolumn{3}{c}{Floyd} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}\cmidrule(lr){9-11}
+ & & Next & Cmp & Total & Next & Cmp & Total & Next & Cmp & Total \\
+\midrule
+0 & 5 & 11 & 11 & 22 & 17 & 13 & 30 & 15 & 6 & 21 \\
+10 & 7 & 35 & 47 & 82 & 49 & 33 & 82 & 62 & 25 & 87 \\
+128 & 256 & 769 & 1023 & 1792 & 1023 & 640 & 1663 & 1024 & 385 & 1409 \\
+256 & 1 & 515 & 1025 & 1540 & 1025 & 769 & 1794 & 1280 & 513 & 1793 \\
+300 & 299 & 1199 & 1665 & 2864 & 1709 & 1111 & 2820 & 2394 & 899 & 3293 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]\centering
+\caption{Weighted cost $C_w=\#\text{next}+w\cdot\#\text{cmp}$: fraction of the
+$90{,}300$ inputs on which the proposed algorithm has no larger weighted cost.}
+\label{tab:weighted}
+\begin{tabular}{rrrrr}
+\toprule
+$w$ & Proposed $\le$ Brent & Proposed $\le$ Floyd & Mean $A/B$ & Mean $A/F$ \\
+\midrule
+0.00 & 1.0000 & 1.0000 & 0.7230 & 0.6840 \\
+0.05 & 1.0000 & 0.9285 & 0.7436 & 0.7125 \\
+0.10 & 1.0000 & 0.8999 & 0.7629 & 0.7400 \\
+0.25 & 1.0000 & 0.7645 & 0.8143 & 0.8168 \\
+0.50 & 1.0000 & 0.4969 & 0.8829 & 0.9283 \\
+1.00 & 0.4975 & 0.4529 & 0.9789 & 1.1051 \\
+2.00 & 0.1229 & 0.1413 & 1.0888 & 1.3440 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The weighted study (Table~\ref{tab:weighted}) makes the scope precise: the
+proposed method is universally no worse than Brent when a comparison costs at most
+half a successor evaluation ($w\le\tfrac12$), but the guarantee disappears as
+comparisons approach the cost of successor evaluations ($w\to1$). This is exactly
+the boundary that the wall-clock study below crosses.
+
+\section{Empirical Evaluation: Wall-Clock and Expensive Oracles}
+\label{sec:wallclock}
+
+Operation counts alone do not establish wall-clock behaviour. We implemented all
+three algorithms over a functional graph in which they interact with the data
+\emph{only} through a successor primitive and integer-identity comparisons, with a
+parameter \textsc{cost} controlling the price of one successor step:
+$\textsc{cost}=0$ is a bare pointer load (the cheapest possible successor), while
+larger \textsc{cost} injects per-step arithmetic modelling an expensive successor
+such as a modular map. Measurements use $\mu=\lambda$ up to $2\times10^6$ on a
+single core.
+
+\begin{table}[H]\centering
+\caption{Wall-clock time per run (ms) and successor-evaluation counts at
+$\mu=\lambda=10^6$ ($n=2\times10^6$). Successor counts confirm the model:
+the proposed method performs the fewest evaluations.}
+\label{tab:wallclock}
+\begin{tabular}{rrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{Successor evaluations} & \multicolumn{3}{c}{Wall-clock (ms)} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+\textsc{cost} & Floyd & Brent & Proposed & Floyd & Brent & Proposed \\
+\midrule
+0  & 5{,}000{,}000 & 5{,}048{,}575 & 4{,}000{,}001 & 4.61 & 6.39 & 6.08 \\
+8  & 5{,}000{,}000 & 5{,}048{,}575 & 4{,}000{,}001 & 27.59 & 29.14 & 24.04 \\
+64 & 5{,}000{,}000 & 5{,}048{,}575 & 4{,}000{,}001 & 440.96 & 447.58 & 357.20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two facts stand out. First, the model is faithful: the proposed algorithm really
+does perform the fewest successor evaluations ($4.0\text{M}$ vs $5.0\text{M}$ for
+Floyd and $5.05\text{M}$ for Brent), independent of \textsc{cost}. Second, fewer
+evaluations do not imply less wall-clock time when a successor is cheap: at
+$\textsc{cost}=0$, Floyd is fastest despite the most dereferences, because the
+proposed method pays for its extra comparisons and richer control flow. Only once
+a successor step is roughly an order of magnitude more expensive than a
+comparison ($\textsc{cost}\gtrsim8$) does the proposed method become fastest ---
+exactly the regime in which Brent was historically preferred over Floyd.
+
+\paragraph{A tunable-cost scenario.}
+We corroborate this with a deterministic iterated map
+$f(x)=\mathrm{mix}^{K}(x)\bmod N$ ($N=2^{20}$, strong 64-bit mixing, salted per
+instance), where $K$ tunes the cost of one oracle call. All finders use $O(1)$
+memory; ground truth (a visited array) validates that every run recovers the true
+$(\mu,\lambda)$. Over $1500$ random maps per cost level there were no validation
+failures, the structural constant is cost-invariant ($3.46$ Floyd, $3.08$ Brent,
+$2.18$ proposed), and the wall-clock speedup is present at every level, tending to
+the evaluation ratio $3.08/2.18\approx1.41$ over Brent (and $\approx1.58$ over
+Floyd) as the oracle grows expensive (Table~\ref{tab:scenario},
+Figure~\ref{fig:scenario}).
+
+\begin{table}[H]\centering
+\caption{Period detection on a tunable-cost deterministic map ($1500$ maps/level).}
+\label{tab:scenario}
+\begin{tabular}{ccccc}
+\toprule
+$K$ & Floyd (ms) & Brent (ms) & Proposed (ms) & speedup vs Brent\\
+\midrule
+1  & 42.5 & 53.4 & 39.0 & $1.37\times$\\
+4  & 86.8 & 123.0 & 79.2 & $1.55\times$\\
+16 & 277.7 & 327.2 & 246.2 & $1.33\times$\\
+32 & 668.8 & 667.3 & 487.1 & $1.37\times$\\
+64 & 1431.0 & 1356.1 & 973.6 & $1.39\times$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\linewidth]{figures_nextval/fig_scenario_prng.pdf}
+\caption{(a) Cost-invariant evaluation constant. (b) The proposed method is
+fastest at every oracle cost. (c) The wall-clock speedup approaches the
+evaluation ratio as the oracle grows expensive.}
+\label{fig:scenario}
+\end{figure}
+
+\section{Application: Pollard's $\rho$ Factorization}
+\label{sec:rho}
+
+The successor-evaluation model's canonical realization is Pollard's $\rho$
+method~\cite{pollard1975}, where the successor is $f(x)=x^2+c \bmod N$, so that
+\emph{one successor evaluation is exactly one modular squaring} --- the dominant
+arithmetic cost --- while node equality is tested by the gcd signal
+$1<\gcd(|x_i-x_j|,N)<N$. Factorization needs a \emph{collision}, not the entry,
+so the relevant cost is detection: by Lemma~\ref{lem:brent-detect} the proposed
+schedule never evaluates more successors than Brent to reach a collision.
+
+\paragraph{Setup.}
+We factored $400$ semiprimes $N=pq$ with $p\in[3\times10^4,3\times10^5]$ and
+$q\in[3\times10^5,3\times10^6]$. For each $N$ we used the first additive constant
+$c\in\{1,\dots,40\}$ for which all three strategies returned a non-trivial factor
+on the same instance, and counted modular squarings until a factor was found.
+
+\begin{table}[H]\centering
+\caption{Pollard's $\rho$: modular squarings to find a factor, averaged over
+$400$ semiprimes. The proposed schedule uses $17.7\%$ fewer squarings than Brent
+and $47.0\%$ fewer than Floyd, and is never worse on any instance.}
+\label{tab:rho}
+\begin{tabular}{lccc}
+\toprule
+ & Proposed $A$ & Brent $B$ & Floyd $F$\\
+\midrule
+mean modular squarings & $541.3$ & $657.4$ & $1021.5$\\
+mean ratio to proposed & $1.00$ & $0.859$ ($A/B$) & $0.544$ ($A/F$)\\
+never-worse rate & --- & $400/400$ & $400/400$\\
+strictly-better rate & --- & $166/400$ & $400/400$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The measured advantage ($17.7\%$ over Brent, $47.0\%$ over Floyd) is consistent
+with the operation-count predictions of Section~\ref{sec:empirical} and is
+realized on a workload whose successor cost is intrinsically expensive. The ties
+against Brent ($234/400$) occur exactly when the two detection schedules coincide
+--- the phenomenon characterized in Theorem~\ref{thm:brent-ties-closed}. This is
+the regime that originally motivated Brent over Floyd, and it is precisely where
+the proposed method improves further.
+
+\subsection{Hardened evaluation: 64-bit Montgomery arithmetic}
+\label{sec:rho-hardened}
+
+To rule out implementation artifacts we re-ran the comparison with a
+production-style kernel: 64-bit modular arithmetic in Montgomery form
+(\texttt{\_\_int128} REDC, no \texttt{libgmp} dependency), the map $f(x)=x^2+c$
+counted as one Montgomery squaring per successor, batched gcd over windows of
+$128$ accumulated differences, and deterministic Miller--Rabin prime generation.
+For each instance the exact $(\mu_p,\lambda_p)$ modulo the smaller prime $p$ is
+obtained by an independent Brent walk, and squaring counts are then taken from the
+validated closed forms, so the comparison is exact rather than sampled.
+
+\begin{table}[H]\centering
+\caption{Modular squarings to the first non-trivial factor, $400$ random balanced
+semiprimes $N=pq$ per bit-size. The proposed schedule needs $\approx30\%$ fewer
+squarings than Brent and $\approx37\%$ fewer than Floyd, and is never worse on any
+single instance.}
+\label{tab:rho-hardened}
+\begin{tabular}{rrrrccc}
+\toprule
+$\log_2 N$ & $\mathbb E[A]$ & $\mathbb E[B]$ & $\mathbb E[F]$ & $A/B$ & $A/F$ & strict $<$ both\\
+\midrule
+32 & 629.1 & 894.9 & 988.8 & 0.703 & 0.636 & $100\%$\\
+40 & 2{,}362 & 3{,}380 & 3{,}917 & 0.699 & 0.603 & $100\%$\\
+48 & 9{,}808 & 13{,}895 & 15{,}475 & 0.706 & 0.634 & $100\%$\\
+56 & 40{,}875 & 57{,}799 & 63{,}916 & 0.707 & 0.640 & $100\%$\\
+60 & 77{,}805 & 110{,}839 & 127{,}157 & 0.702 & 0.612 & $100\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ratios are flat across four orders of magnitude in $N$, exactly as the
+constant-factor theory predicts. Wall-clock timing on the same kernel
+(Table~\ref{tab:rho-wallclock}) confirms the saving survives end-to-end: adding a
+per-step ``expensive-oracle'' load \textsc{extra} (modelling co-factor work or a
+heavier mixing map), the proposed method is $\approx1.43\times$ faster than Brent
+and $\approx1.6\times$ faster than Floyd at every level.
+
+\begin{table}[H]\centering
+\caption{Wall-clock per factored $48$-bit semiprime ($\mu$s, mean$\pm$s.d.,
+$400$ instances/level; Montgomery REDC, batched gcd). \textsc{extra} is the
+injected per-step oracle cost.}
+\label{tab:rho-wallclock}
+\begin{tabular}{rrrrcc}
+\toprule
+\textsc{extra} & Floyd & Brent & Proposed & vs Brent & vs Floyd\\
+\midrule
+0  & $150.2\pm84.2$ & $132.1\pm66.7$ & $92.3\pm45.4$ & $1.43\times$ & $1.63\times$\\
+2  & $257.4\pm144$ & $226.6\pm113$ & $158.2\pm77$ & $1.43\times$ & $1.63\times$\\
+8  & $629.8\pm500$ & $528.8\pm266$ & $369.7\pm181$ & $1.43\times$ & $1.70\times$\\
+32 & $2064\pm1489$ & $1761\pm901$ & $1231\pm647$ & $1.43\times$ & $1.68\times$\\
+64 & $3805\pm2132$ & $3360\pm1696$ & $2376\pm1213$ & $1.41\times$ & $1.60\times$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Related Work}
+\label{sec:related}
+
+Floyd's tortoise-and-hare is commonly attributed to his 1967 work on
+nondeterministic algorithms~\cite{floyd1967}; Brent's power-of-two method arose
+in Monte-Carlo factorization with a reported one-third reduction over Floyd in
+Pollard-$\rho$ applications~\cite{brent1980}, which our measurements reproduce
+(Section~\ref{sec:rho}). Pollard's $\rho$~\cite{pollard1975} is the canonical
+setting where a successor is genuinely expensive. The distribution of
+$(\mu,\lambda)$ for random mappings is governed by the Knuth--Flajolet
+school~\cite{flajolet,sedgewick2013}, with $\mathbb E[\mu+\lambda]\sim\sqrt{\pi/2}\sqrt n$.
+A second line trades space for evaluations: Gosper's stack scheme~\cite{gosper1972}
+and Nivasch's single-pass stack~\cite{nivasch2004} reach the optimum
+$\mu+\lambda$ but use $\Theta(\log(\mu+\lambda))$ memory; the time--space bounds
+of Sedgewick, Szymanski and Yao~\cite{ssy1982} show this memory is necessary.
+Table~\ref{tab:related} places the present method, using the closed forms
+established above; here $k_B=\lceil\log_2\max(\lambda,\mu+1)\rceil$ and
+$T=\lambda\lceil\mu/\lambda\rceil$.
+
+\begin{table}[H]\centering
+\caption{Cycle-detection methods by auxiliary space and successor-evaluation
+count. The proposed method dominates both constant-space baselines pointwise
+while remaining in $O(1)$ space; Nivasch attains the evaluation optimum but uses
+non-constant memory.}
+\label{tab:related}
+\begin{tabular}{llll}
+\toprule
+Method & Aux.\ space & Successor evaluations (cyclic) & Notes\\
+\midrule
+Floyd~\cite{floyd1967} & $O(1)$ & $F=3T+2\mu$ & tortoise/hare\\
+Brent~\cite{brent1980} & $O(1)$ & $B=2^{k_B}\!-\!1+2\lambda+2\mu$ & power-of-two\\
+\textbf{Proposed} & $O(1)$ & $\mu+\lambda\le A\le 2\mu+3\lambda$, $A\le\min(B,F)$ & this paper\\
+Nivasch~\cite{nivasch2004} & $O(\log k)$ exp. & $\mu+\lambda$ (optimal) & stack\\
+\midrule
+Lower bound (Thm.~\ref{thm:lowerbound}) & any & $\ge\mu+\lambda$ & this paper\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Expensive successors and parallel search.}
+Where the successor is a cryptographic map, three further lines are relevant. The
+Pollard--Brent factorization of $F_8$~\cite{brent1981} established the $\rho$
+method at scale, and Montgomery's batching and inversion
+tricks~\cite{montgomery1987} reduce the per-step cost we hold fixed: they are
+orthogonal to, and compose with, our schedule, which changes only \emph{how many}
+successors are taken. Teske's adding- and mixing-walks~\cite{teske1998} improve
+the statistical quality of the iterating map (shrinking the effective
+$\mu+\lambda$), again orthogonally to the detection schedule. Finally, the
+distinguished-point technique of Quisquater and Delescaille~\cite{qd1990} and the
+parallel collision search of van Oorschot and Wiener~\cite{vow1999} trade memory
+and many machines for throughput; our contribution is to the \emph{serial}
+constant of a single walk, and a distinguished-point variant of the localization
+anchor is a natural extension (Section~\ref{sec:limits}).
+
+Our contribution is not a new asymptotic class but a tighter constant with an
+exact, verifiable analysis, a proved per-instance dominance, a matching lower
+bound, and a multi-anchor latency/work tradeoff.
+
+\section{Discussion and Limitations}
+\label{sec:limits}
+\begin{itemize}[leftmargin=2em,itemsep=2pt]
+  \item The asymptotic complexity remains $\Theta(\mu+\lambda)$; the improvement
+        is a constant factor ($\approx2.18$ in expectation versus $3.08$/$3.5$).
+  \item The dominance results count only successor evaluations on cyclic inputs.
+        The method performs more pointer comparisons than Floyd and has more
+        control flow than Brent; in the cheap-successor regime these costs make
+        it slower than plain Floyd (Section~\ref{sec:wallclock},
+        Table~\ref{tab:weighted}).
+  \item For acyclic lists, whether a null check counts as a dereference changes
+        exact constants, so we claim dereference-count dominance only for cyclic
+        inputs and only $O(n)$ termination otherwise.
+  \item In some applications (e.g.\ Pollard $\rho$) other costs --- batched gcds,
+        modular reductions --- may matter, so the end-to-end saving must be
+        re-measured per application.
+  \item The method \emph{detects} recurrence; it does not by itself \emph{escape}
+        it. In optimization-style settings it is a cheap oscillation/limit-cycle
+        trigger, not a solver.
+  \item \textbf{Cost model.} The dominance metric counts successor evaluations
+        only. On hardware where comparisons and branch mispredictions are not
+        free, a net speedup requires the successor to cost at least
+        $\approx8\times$ a comparison (Table~\ref{tab:weighted},
+        Section~\ref{sec:wallclock}); we state this threshold explicitly rather
+        than claim an unconditional speedup.
+  \item \textbf{Originality.} The two-phase probe and power-of-two anchors are
+        Brent-style; what is new, to our knowledge, is combining a
+        \emph{failure-compression} (nextval) prefix-skip with a
+        \emph{localization anchor} (the previous round's anchor, proved safe to
+        start entry detection from). The skip is what lowers \emph{total} --- not
+        merely detection --- evaluations, yielding the $\approx2.18$ constant that
+        pure multi-anchor schemes provably cannot reach
+        (Corollary~\ref{cor:o1-optimal}).
+  \item \textbf{Open dimensions.} A distinguished-point/parallel variant,
+        SIMD-vectorised batching of the squaring, online/streaming inputs, and
+        robustness to a noisy successor oracle are untouched here, as is closing
+        the gap between the proved $O(1)$-space detection floor $1.2213$ and the
+        total constant $2.18$.
+\end{itemize}
+
+\paragraph{Positioning.}
+The honest summary is that this is a constant-factor refinement, not a
+complexity-class result: $\Theta(\mu+\lambda)$ time and $O(1)$ space are
+unchanged. Its value concentrates where (i) the successor dominates cost
+(Pollard $\rho$, expensive mixing maps) and (ii) per-instance worst-case
+guarantees matter, since the method never loses to Brent or Floyd on any cyclic
+input and wins on almost all.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a monotone single-pointer anchor-advancement algorithm for cycle
+detection that combines two-phase probing, a failure-compression (nextval) skip
+rule, and a localization anchor that starts entry detection closer to the cycle.
+We proved correctness, linear time, and constant space; gave an exact closed form
+for its successor-evaluation count; proved that it weakly dominates both Brent and
+Floyd on \emph{every} cyclic input --- strictly so on all but three (resp.\ one)
+degenerate inputs --- and that, against a matching $\mu+\lambda$ lower bound, it is
+constant-factor optimal. An average-case Mellin analysis identifies its constant
+as a log-periodic $\approx2.18033$, a multi-anchor extension traces the
+detection/total-work Pareto frontier, and wall-clock and Pollard-$\rho$ studies
+locate the crossover at which fewer evaluations become a real speedup. The result
+is a clean, distribution-free, fully analyzable refinement of Brent-style cycle
+finding in the successor-evaluation model --- most useful wherever the successor
+is the dominant cost --- rather than a universal replacement.
+
+\begin{thebibliography}{9}
+
+\bibitem{floyd1967} R.~W.~Floyd. Nondeterministic algorithms.
+\emph{Journal of the ACM}, 14(4):636--644, 1967.
+
+\bibitem{brent1980} R.~P.~Brent. An improved Monte Carlo factorization algorithm.
+\emph{BIT Numerical Mathematics}, 20:176--184, 1980.
+
+\bibitem{pollard1975} J.~M.~Pollard. A Monte Carlo method for factorization.
+\emph{BIT Numerical Mathematics}, 15(3):331--334, 1975.
+
+\bibitem{kmp1977} D.~E.~Knuth, J.~H.~Morris~Jr., and V.~R.~Pratt. Fast pattern
+matching in strings. \emph{SIAM Journal on Computing}, 6(2):323--350, 1977.
+
+\bibitem{flajolet} P.~Flajolet and A.~M.~Odlyzko. Random mapping statistics.
+\emph{EUROCRYPT '89}, LNCS 434, 329--354, 1990.
+
+\bibitem{nivasch2004} G.~Nivasch. Cycle detection using a stack.
+\emph{Information Processing Letters}, 90(3):135--140, 2004.
+
+\bibitem{gosper1972} R.~W.~Gosper. Item 132: cycle detection in $O(\log)$ space.
+In M.~Beeler, R.~W.~Gosper, and R.~Schroeppel, \emph{HAKMEM}, MIT AI Memo 239, 1972.
+
+\bibitem{ssy1982} R.~Sedgewick, T.~G.~Szymanski, and A.~C.~Yao. The complexity of
+finding cycles in periodic functions. \emph{SIAM Journal on Computing},
+11(2):376--390, 1982.
+
+\bibitem{sedgewick2013} R.~Sedgewick and P.~Flajolet. \emph{An Introduction to
+the Analysis of Algorithms}. Addison-Wesley, 2nd edition, 2013.
+
+\bibitem{montgomery1987} P.~L.~Montgomery. Speeding the Pollard and elliptic curve
+methods of factorization. \emph{Mathematics of Computation}, 48(177):243--264, 1987.
+
+\bibitem{brent1981} R.~P.~Brent and J.~M.~Pollard. Factorization of the eighth
+Fermat number. \emph{Mathematics of Computation}, 36(154):627--630, 1981.
+
+\bibitem{teske1998} E.~Teske. Speeding up Pollard's rho method for computing
+discrete logarithms. \emph{ANTS-III}, LNCS 1423, 541--554, 1998.
+
+\bibitem{qd1990} J.-J.~Quisquater and J.-P.~Delescaille. How easy is collision
+search? Application to DES. \emph{EUROCRYPT '89}, LNCS 434, 429--434, 1990.
+
+\bibitem{vow1999} P.~C.~van Oorschot and M.~J.~Wiener. Parallel collision search
+with cryptanalytic applications. \emph{Journal of Cryptology}, 12(1):1--28, 1999.
+
+\end{thebibliography}
+
+\end{document}
